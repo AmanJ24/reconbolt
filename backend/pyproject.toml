@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reconbolt"
+version = "1.0.0"
+description = "A production-grade AI-powered cybersecurity reconnaissance platform"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Aman J", email = "aman@reconbolt.dev"},
+]
+keywords = ["cybersecurity", "reconnaissance", "security-scanner", "pentest"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Topic :: Security",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "httpx>=0.27.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "python-nmap>=0.7.1",
+    "python-dotenv>=1.0.0",
+    "rich>=13.7.0",
+    "typer>=0.9.0",
+    "matplotlib>=3.8.0",
+]
+
+[project.optional-dependencies]
+ai = [
+    "openai>=1.10.0",
+    "google-genai>=1.0.0",
+]
+api = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "websockets>=12.0",
+    "sqlalchemy>=2.0.0",
+    "aiosqlite>=0.19.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "httpx>=0.27.0",
+    "ruff>=0.2.0",
+]
+all = ["reconbolt[ai,api,dev]"]
+
+[project.scripts]
+reconbolt = "reconbolt.cli.main:app"
+
+[tool.setuptools.packages.find]
+include = ["reconbolt*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120

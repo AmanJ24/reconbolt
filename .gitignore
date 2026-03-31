@@ -1,0 +1,67 @@
+# ============================
+# Environment & Secrets
+# ============================
+.env
+.env.local
+.env.*.local
+
+# ============================
+# Python
+# ============================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# ============================
+# Node.js / Frontend
+# ============================
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ============================
+# IDE / Editor
+# ============================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ============================
+# Testing & Coverage
+# ============================
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ============================
+# Database & Scan Output
+# ============================
+*.db
+*.sqlite3
+scan_results_*/
+*.log
+
+# ============================
+# OS
+# ============================
+.DS_Store
+*.DS_Store
+Thumbs.db
+ehthumbs.db
