@@ -1,10 +1,13 @@
 /* ========================================================================
    ReconBolt — API Client
+   
+   Uses relative URLs so the Vite dev proxy forwards to the backend.
+   In production, configure the base URL via environment variable.
    ======================================================================== */
 
 import type { ScanConfig, ScanResult, ScanListItem, ScanEvent } from '../types';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = '';  // Empty = relative URLs → routed by Vite proxy in dev
 
 // --- REST API ---
 
@@ -14,7 +17,10 @@ export async function startScan(config: ScanConfig): Promise<{ scan_id: string; 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
   });
-  if (!res.ok) throw new Error(`Failed to start scan: ${res.statusText}`);
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`Failed to start scan (${res.status}): ${detail}`);
+  }
   return res.json();
 }
 
@@ -44,23 +50,31 @@ export function connectScanWebSocket(
   onComplete: (result: ScanResult) => void,
   onError: (error: string) => void,
 ): WebSocket {
-  const ws = new WebSocket(`ws://localhost:8000/api/scans/${scanId}/ws`);
+  // Use the current page's host for WebSocket (works with Vite proxy)
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${wsProtocol}//${window.location.host}/api/scans/${scanId}/ws`;
+
+  const ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
     ws.send(JSON.stringify(config));
   };
 
   ws.onmessage = (event) => {
-    const data: ScanEvent = JSON.parse(event.data);
-    if (data.result) {
-      onComplete(data.result);
-    } else {
-      onEvent(data);
+    try {
+      const data: ScanEvent = JSON.parse(event.data);
+      if (data.result) {
+        onComplete(data.result);
+      } else {
+        onEvent(data);
+      }
+    } catch (e) {
+      console.error('Failed to parse WebSocket message:', e);
     }
   };
 
   ws.onerror = () => {
-    onError('WebSocket connection failed');
+    onError('WebSocket connection failed — is the backend running?');
   };
 
   ws.onclose = () => {

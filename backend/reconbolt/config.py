@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        env_prefix="RECONBOLT_",
         extra="ignore",
+        populate_by_name=True,
     )
 
     # --- AI Providers ---
@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     # --- API Server ---
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"]
 
     @property
     def has_ai(self) -> bool:

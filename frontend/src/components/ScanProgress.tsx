@@ -91,7 +91,7 @@ export default function ScanProgress({ config, onComplete, onBack }: ScanProgres
         // Poll for results
         const pollInterval = setInterval(async () => {
           try {
-            const res = await fetch(`http://localhost:8000/api/scans/${response.scan_id}`);
+            const res = await fetch(`/api/scans/${response.scan_id}`);
             if (res.ok) {
               const data = await res.json();
               if (data.status === 'completed' || data.status === 'failed') {

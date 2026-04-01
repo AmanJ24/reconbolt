@@ -34,15 +34,20 @@ async def start_scan(config: ScanConfig) -> dict[str, Any]:
 
     # Run scan in background
     async def run_scan():
-        result = await orchestrator.run()
-        _scan_store[scan_id] = result
+        try:
+            result = await orchestrator.run()
+            _scan_store[scan_id] = result
+        except Exception as e:
+            orchestrator.result.status = ScanStatus.FAILED
+            orchestrator.result.errors.append(str(e))
+            _scan_store[scan_id] = orchestrator.result
 
     task = asyncio.create_task(run_scan())
     _active_tasks[scan_id] = task
 
     return {
         "scan_id": scan_id,
-        "target": config.target,
+        "target": orchestrator.config.target,
         "status": "running",
         "message": f"Scan started. Monitor at GET /api/scans/{scan_id}",
     }
@@ -69,7 +74,7 @@ async def get_scan(scan_id: str) -> dict[str, Any]:
     """Get full results of a specific scan."""
     if scan_id not in _scan_store:
         raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
-    return _scan_store[scan_id].model_dump()
+    return _scan_store[scan_id].model_dump(mode="json")
 
 
 @router.delete("/{scan_id}")
@@ -93,26 +98,24 @@ async def delete_scan(scan_id: str) -> dict[str, str]:
 async def scan_websocket(websocket: WebSocket, scan_id: str):
     """WebSocket endpoint for real-time scan progress.
 
-    Connect before or after starting a scan to receive live events.
+    Connect and send a scan config JSON to start receiving live events.
     """
     await websocket.accept()
 
-    # Create a new scan with events streamed via WebSocket
+    # Capture the running event loop for thread-safe event pushing
+    loop = asyncio.get_running_loop()
     event_queue: asyncio.Queue[ScanEvent] = asyncio.Queue()
-
-    async def event_handler(event: ScanEvent):
-        await event_queue.put(event)
 
     try:
         # Wait for scan config from client
         data = await websocket.receive_json()
         config = ScanConfig(**data)
 
-        # Setup emitter that pushes to our queue
+        # Setup emitter that pushes events to our queue (thread-safe)
         emitter = EventEmitter()
 
         def sync_handler(event: ScanEvent):
-            asyncio.get_event_loop().call_soon_threadsafe(event_queue.put_nowait, event)
+            loop.call_soon_threadsafe(event_queue.put_nowait, event)
 
         emitter.on_event(sync_handler)
 

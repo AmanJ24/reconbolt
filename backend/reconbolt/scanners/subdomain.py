@@ -10,12 +10,13 @@ Discovers subdomains using multiple sources:
 
 from __future__ import annotations
 
+import asyncio
 import socket
 from typing import Any
 
 import httpx
 
-from reconbolt.engine.events import EventLevel, ScanPhase
+from reconbolt.engine.events import ScanPhase
 from reconbolt.models.findings import SubdomainFinding
 from reconbolt.scanners.base import BaseScanner
 
@@ -57,7 +58,7 @@ class SubdomainScanner(BaseScanner):
         completed = 0
 
         async with httpx.AsyncClient(
-            timeout=20.0,
+            timeout=30.0,
             headers={"User-Agent": "ReconBolt/1.0"},
             follow_redirects=True,
         ) as client:
@@ -69,7 +70,7 @@ class SubdomainScanner(BaseScanner):
                     self.emitter.success(
                         self.phase,
                         f"Found {len(found)} subdomains from {name}",
-                        progress=(completed + 1) / total_sources * 100,
+                        progress=(completed + 1) / total_sources * 20,  # 0-20% for enumeration
                     )
                 except Exception as e:
                     self.emitter.warning(self.phase, f"Error querying {name}: {e}")
@@ -83,27 +84,50 @@ class SubdomainScanner(BaseScanner):
                 self.emitter.success(
                     self.phase,
                     f"DNS brute-force found {len(brute_found)} subdomains",
-                    progress=100.0,
+                    progress=25.0,
                 )
             except Exception as e:
                 self.emitter.warning(self.phase, f"DNS brute-force error: {e}")
 
-        # Build findings
+        # Build findings — resolve IPs concurrently
         findings = []
-        for subdomain in sorted(all_subdomains):
-            ip = self._resolve_ip(subdomain)
-            findings.append(
-                SubdomainFinding(
-                    host=self.config.target,
-                    subdomain=subdomain,
-                    ip_address=ip,
-                )
+        subdomains_sorted = sorted(all_subdomains)
+
+        if subdomains_sorted:
+            self.emitter.info(self.phase, f"Resolving IPs for {len(subdomains_sorted)} subdomains...")
+
+            # Resolve IPs in batches using asyncio
+            async def resolve(subdomain: str) -> tuple[str, str | None]:
+                ip = await asyncio.to_thread(self._resolve_ip, subdomain)
+                return subdomain, ip
+
+            # Run all resolutions concurrently with a semaphore to avoid flooding
+            sem = asyncio.Semaphore(20)
+
+            async def resolve_with_sem(subdomain: str) -> tuple[str, str | None]:
+                async with sem:
+                    return await resolve(subdomain)
+
+            results = await asyncio.gather(
+                *(resolve_with_sem(s) for s in subdomains_sorted),
+                return_exceptions=True,
             )
+
+            for result in results:
+                if isinstance(result, tuple):
+                    subdomain, ip = result
+                    findings.append(
+                        SubdomainFinding(
+                            host=self.config.target,
+                            subdomain=subdomain,
+                            ip_address=ip,
+                        )
+                    )
 
         self.emitter.success(
             self.phase,
             f"Total unique subdomains discovered: {len(findings)}",
-            progress=100.0,
+            progress=25.0,
         )
         return findings
 
@@ -112,16 +136,21 @@ class SubdomainScanner(BaseScanner):
     async def _from_crtsh(self, client: httpx.AsyncClient) -> set[str]:
         """Query Certificate Transparency logs via crt.sh."""
         url = f"https://crt.sh/?q=%.{self.config.target}&output=json"
-        response = await client.get(url)
         subdomains: set[str] = set()
-        if response.status_code == 200:
-            for item in response.json():
-                name = item.get("name_value", "").lower().strip()
-                # Handle multi-line cert entries
-                for line in name.split("\n"):
-                    line = line.strip()
-                    if line.endswith(f".{self.config.target}") and "*" not in line:
-                        subdomains.add(line)
+        try:
+            response = await client.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, list):
+                    for item in data:
+                        name = item.get("name_value", "").lower().strip()
+                        # Handle multi-line cert entries
+                        for line in name.split("\n"):
+                            line = line.strip()
+                            if line.endswith(f".{self.config.target}") and "*" not in line:
+                                subdomains.add(line)
+        except (httpx.HTTPError, ValueError) as e:
+            self.emitter.warning(self.phase, f"crt.sh error: {e}")
         return subdomains
 
     async def _from_virustotal(self, client: httpx.AsyncClient) -> set[str]:
@@ -134,15 +163,18 @@ class SubdomainScanner(BaseScanner):
         url: str | None = f"https://www.virustotal.com/api/v3/domains/{self.config.target}/subdomains?limit=40"
         headers = {"x-apikey": self.settings.virustotal_api_key}
 
-        while url:
-            response = await client.get(url, headers=headers)
-            if response.status_code != 200:
-                self.emitter.warning(self.phase, f"VirusTotal returned status {response.status_code}")
-                break
-            data = response.json()
-            for item in data.get("data", []):
-                subdomains.add(item["id"])
-            url = data.get("links", {}).get("next")
+        try:
+            while url:
+                response = await client.get(url, headers=headers)
+                if response.status_code != 200:
+                    self.emitter.warning(self.phase, f"VirusTotal returned status {response.status_code}")
+                    break
+                data = response.json()
+                for item in data.get("data", []):
+                    subdomains.add(item["id"])
+                url = data.get("links", {}).get("next")
+        except Exception as e:
+            self.emitter.warning(self.phase, f"VirusTotal error: {e}")
 
         return subdomains
 
@@ -156,12 +188,16 @@ class SubdomainScanner(BaseScanner):
         headers = {"X-OTX-API-KEY": self.settings.alienvault_otx_key}
         subdomains: set[str] = set()
 
-        response = await client.get(url, headers=headers)
-        if response.status_code == 200:
-            for record in response.json().get("passive_dns", []):
-                hostname = record.get("hostname", "")
-                if hostname.endswith(f".{self.config.target}"):
-                    subdomains.add(hostname)
+        try:
+            response = await client.get(url, headers=headers)
+            if response.status_code == 200:
+                for record in response.json().get("passive_dns", []):
+                    hostname = record.get("hostname", "")
+                    if hostname.endswith(f".{self.config.target}"):
+                        subdomains.add(hostname)
+        except Exception as e:
+            self.emitter.warning(self.phase, f"OTX error: {e}")
+
         return subdomains
 
     async def _from_urlscan(self, client: httpx.AsyncClient) -> set[str]:
@@ -169,12 +205,16 @@ class SubdomainScanner(BaseScanner):
         url = f"https://urlscan.io/api/v1/search/?q=domain:{self.config.target}"
         subdomains: set[str] = set()
 
-        response = await client.get(url)
-        if response.status_code == 200:
-            for result in response.json().get("results", []):
-                domain = result.get("task", {}).get("domain", "")
-                if domain.endswith(f".{self.config.target}"):
-                    subdomains.add(domain)
+        try:
+            response = await client.get(url)
+            if response.status_code == 200:
+                for result in response.json().get("results", []):
+                    domain = result.get("task", {}).get("domain", "")
+                    if domain.endswith(f".{self.config.target}"):
+                        subdomains.add(domain)
+        except Exception as e:
+            self.emitter.warning(self.phase, f"URLScan error: {e}")
+
         return subdomains
 
     async def _bruteforce(self) -> set[str]:
@@ -194,14 +234,23 @@ class SubdomainScanner(BaseScanner):
         self.emitter.info(self.phase, f"Starting DNS brute-force with {len(wordlist)} words...")
         found: set[str] = set()
 
-        import asyncio
-        for i, word in enumerate(wordlist):
-            subdomain = f"{word}.{self.config.target}"
-            ip = await asyncio.to_thread(self._resolve_ip, subdomain)
-            if ip:
-                found.add(subdomain)
-                self.emitter.info(self.phase, f"Discovered: {subdomain} → {ip}")
+        sem = asyncio.Semaphore(30)
 
+        async def try_subdomain(word: str) -> str | None:
+            async with sem:
+                subdomain = f"{word}.{self.config.target}"
+                ip = await asyncio.to_thread(self._resolve_ip, subdomain)
+                if ip:
+                    return subdomain
+                return None
+
+        tasks = [try_subdomain(word) for word in wordlist]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for i, result in enumerate(results):
+            if isinstance(result, str):
+                found.add(result)
+                self.emitter.info(self.phase, f"Discovered: {result}")
             # Report progress periodically
             if (i + 1) % 20 == 0:
                 pct = (i + 1) / len(wordlist) * 100
